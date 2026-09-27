@@ -480,3 +480,82 @@ export function runRegex(
     worker.on("error", (error) => finish({ candidates: [], truncated: false, tooLong: 0, error: error.message }));
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared per-answer contract validators. These are the single source of truth
+// for what counts as a well-formed model answer; the MCP tools and any
+// direct-call client (one that builds questions and calls askJev itself) must
+// agree on them, so they live here on the side-effect-free module instead of
+// the entry module, whose import boots a server.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Score questions always offer exactly three options (0, 1, 2). */
+export const SCORE_OPTION_KEYS = ["0", "1", "2"] as const;
+
+// Score contract: a finite 0..2 score, plus, when a distribution is present
+// at all, an exact three-key distribution over the option scores summing to
+// one whose expected value matches the reported score. A distribution the
+// provider did not report stays null (still valid); a malformed or
+// contradictory one invalidates the answer.
+export function validateScoreAnswer(answer: unknown): {
+  score: number;
+  confidence: number | null;
+  probabilities: Record<string, number> | null;
+} | null {
+  const a = answer as { score?: unknown; confidence?: unknown; probabilities?: unknown } | null | undefined;
+  if (!a || typeof a.score !== "number" || !Number.isFinite(a.score) || a.score < 0 || a.score > 2) return null;
+  const confidence =
+    typeof a.confidence === "number" && Number.isFinite(a.confidence) && a.confidence >= 0 && a.confidence <= 1
+      ? a.confidence
+      : null;
+  if (a.probabilities == null) return { score: a.score, confidence, probabilities: null };
+  if (!isRecord(a.probabilities)) return null;
+  const probabilities = a.probabilities as Record<string, number>;
+  const keys = Object.keys(probabilities);
+  const values = Object.values(probabilities);
+  const expected = new Set<string>(SCORE_OPTION_KEYS);
+  if (
+    keys.length !== expected.size ||
+    !keys.every((key) => expected.has(key)) ||
+    !values.every((p) => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1) ||
+    Math.abs(values.reduce((x, y) => x + y, 0) - 1) > PROBABILITY_SUM_TOLERANCE
+  ) {
+    return null;
+  }
+  const mean = SCORE_OPTION_KEYS.reduce((sum, key) => sum + Number(key) * probabilities[key], 0);
+  if (Math.abs(mean - a.score) > SCORE_MEAN_TOLERANCE) return null;
+  return { score: a.score, confidence, probabilities };
+}
+
+// Choice contract: exact candidate keys, finite [0,1] probabilities summing
+// to one within PROBABILITY_SUM_TOLERANCE, and a choice tied for the maximum
+// probability.
+export function validateChoiceAnswer(answer: unknown, expectedKeys: Iterable<string>): {
+  choice: string; probabilities: Record<string, number>; confidence: number | null;
+} | null {
+  if (!isRecord(answer) || typeof answer.choice !== "string" || !isRecord(answer.probabilities)) return null;
+  const expected = new Set(expectedKeys);
+  // Shape is enforced by the isRecord guards above and the finite [0,1] check below.
+  const probabilities = answer.probabilities as Record<string, number>;
+  const keys = Object.keys(probabilities);
+  const values = Object.values(probabilities);
+  if (
+    !expected.has(answer.choice) || keys.length !== expected.size ||
+    !keys.every((key) => expected.has(key)) ||
+    !values.every((p) => typeof p === "number" && Number.isFinite(p) && p >= 0 && p <= 1) ||
+    Math.abs(values.reduce((a, b) => a + b, 0) - 1) > PROBABILITY_SUM_TOLERANCE ||
+    probabilities[answer.choice] < Math.max(...values) - 1e-9
+  ) return null;
+  const confidence =
+    typeof answer.confidence === "number" && Number.isFinite(answer.confidence) && answer.confidence >= 0 && answer.confidence <= 1
+      ? answer.confidence
+      : null;
+  return { choice: answer.choice, probabilities, confidence };
+}
+
+// Noul contract: a finite probability in [0,1].
+export function validateNoulAnswer(answer: unknown): number | null {
+  const a = answer as { noul?: unknown } | null | undefined;
+  if (!a || typeof a.noul !== "number" || !Number.isFinite(a.noul) || a.noul < 0 || a.noul > 1) return null;
+  return a.noul;
+}

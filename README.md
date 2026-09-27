@@ -653,6 +653,23 @@ Jev is TypeSafe's System One model: it returns typed answers with calibrated pro
 
 For Choice and Score, `confidence` measures how peaked the option probabilities are, scaled from 0 for a uniform distribution to 1 for all probability on one option; it is not the probability the answer is correct, so tune thresholds against observed outcomes.
 
+## Use as a library
+
+The MCP tool layer is optional. A script can build questions with `@typesafe-ai/sdk`, call `askJev` directly, and validate the answers itself, without starting a server:
+
+```js
+import { askJev } from "@jkudish/jev-mcp/dist/provider.js";
+import {
+  RELATION_TO_VERDICT,
+  verifyAction,
+  validateChoiceAnswer,
+  validateScoreAnswer,
+  validateNoulAnswer,
+} from "@jkudish/jev-mcp/dist/lib.js";
+```
+
+The `validate*Answer` functions in `dist/lib.js` are the same fail-closed validators the server applies to every answer: each returns the parsed answer or `null`, never a semantic default. Reuse them instead of re-implementing the answer contract, so your client and the server cannot drift apart. Importing `dist/lib.js` or `dist/provider.js` has no side effects; only the entry module (`dist/index.js`) boots a server.
+
 ## Limits and tuning
 
 - Thresholds (`auto_accept`, `block_at`, `review_at`, exists cutoffs) are starting points from the TypeSafe cookbooks. Tune them against your own data before you enforce them. See [how TypeSafe reports confidence](https://docs.typesafe.ai/confidence.md).

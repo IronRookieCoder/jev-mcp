@@ -25,6 +25,10 @@ import {
   resolvePolicyThresholds,
   reviewAction,
   reviewComposite,
+  SCORE_OPTION_KEYS,
+  validateChoiceAnswer,
+  validateNoulAnswer,
+  validateScoreAnswer,
   worstAction,
   normalizeEvidence,
   hasNonEmptyEvidence,
@@ -324,4 +328,99 @@ test("runRegex terminates its worker when the signal aborts mid-run", async () =
   const result = await promise;
   assert.equal(result.error, "request aborted");
   assert.deepEqual(result.candidates, []);
+});
+
+test("validateChoiceAnswer accepts a well-formed answer and rejects contract violations", () => {
+  const keys = ["supports", "contradicts", "says_nothing"];
+  const good = {
+    choice: "supports",
+    probabilities: { supports: 0.7, contradicts: 0.2, says_nothing: 0.1 },
+    confidence: 0.9,
+  };
+  assert.deepEqual(validateChoiceAnswer(good, keys), good);
+  // Winner is not tied for the maximum.
+  assert.equal(
+    validateChoiceAnswer({ ...good, choice: "contradicts" }, keys),
+    null,
+  );
+  // Missing or extra keys break the exact-key contract.
+  assert.equal(
+    validateChoiceAnswer(
+      { choice: "supports", probabilities: { supports: 1, contradicts: 0 } },
+      keys,
+    ),
+    null,
+  );
+  // Probabilities outside [0,1], non-finite, or a sum drifting beyond tolerance.
+  assert.equal(
+    validateChoiceAnswer(
+      { choice: "supports", probabilities: { supports: 1.2, contradicts: 0, says_nothing: -0.2 } },
+      keys,
+    ),
+    null,
+  );
+  assert.equal(
+    validateChoiceAnswer(
+      { choice: "supports", probabilities: { supports: 0.9, contradicts: 0.05, says_nothing: 0.0 } },
+      keys,
+    ),
+    null,
+  );
+  // Unknown choice key, and non-object payloads.
+  assert.equal(
+    validateChoiceAnswer(
+      { choice: "maybe", probabilities: { maybe: 1, supports: 0, contradicts: 0 } },
+      keys,
+    ),
+    null,
+  );
+  assert.equal(validateChoiceAnswer(null, keys), null);
+  assert.equal(validateChoiceAnswer("supports", keys), null);
+  // Confidence out of range degrades to null instead of invalidating the answer.
+  const degraded = validateChoiceAnswer({ ...good, confidence: 42 }, keys);
+  assert.deepEqual(degraded, { ...good, confidence: null });
+});
+
+test("validateScoreAnswer enforces the 0..2 rubric and distribution consistency", () => {
+  assert.deepEqual(SCORE_OPTION_KEYS, ["0", "1", "2"]);
+  const good = {
+    score: 1,
+    confidence: 0.8,
+    probabilities: { 0: 0.2, 1: 0.6, 2: 0.2 },
+  };
+  assert.deepEqual(validateScoreAnswer(good), good);
+  // Score outside the rubric or non-finite.
+  assert.equal(validateScoreAnswer({ score: 2.5 }), null);
+  assert.equal(validateScoreAnswer({ score: "1" }), null);
+  // A missing distribution is valid and stays null.
+  assert.deepEqual(validateScoreAnswer({ score: 1.5, confidence: null }), {
+    score: 1.5,
+    confidence: null,
+    probabilities: null,
+  });
+  // A present-but-malformed distribution invalidates the answer.
+  assert.equal(
+    validateScoreAnswer({ score: 1, probabilities: { 0: 0.5, 1: 0.5 } }),
+    null,
+  );
+  assert.equal(
+    validateScoreAnswer({ score: 1, probabilities: { 0: 1.2, 1: -0.2, 2: 0 } }),
+    null,
+  );
+  // The reported score must match its own distribution's expected value.
+  assert.equal(
+    validateScoreAnswer({ score: 0, probabilities: { 0: 0.2, 1: 0.6, 2: 0.2 } }),
+    null,
+  );
+});
+
+test("validateNoulAnswer accepts finite [0,1] probabilities and rejects the rest", () => {
+  assert.equal(validateNoulAnswer({ noul: 0 }), 0);
+  assert.equal(validateNoulAnswer({ noul: 1 }), 1);
+  assert.equal(validateNoulAnswer({ noul: 0.42 }), 0.42);
+  assert.equal(validateNoulAnswer({ noul: -0.01 }), null);
+  assert.equal(validateNoulAnswer({ noul: 1.01 }), null);
+  assert.equal(validateNoulAnswer({ noul: Number.NaN }), null);
+  assert.equal(validateNoulAnswer({}), null);
+  assert.equal(validateNoulAnswer(null), null);
 });
